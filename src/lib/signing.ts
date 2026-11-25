@@ -67,7 +67,6 @@ import {
   createEmailService,
   createLazyEmailService,
   fitsAsAttachments,
-  type EmailAttachment,
   type EmailService,
 } from "./services/email.ts";
 import { withUserEmailLegalFooter } from "./services/email-legal-footer.ts";
@@ -104,6 +103,12 @@ import {
   nextSignerLinkExpiresAt,
 } from "./envelope-deadline.ts";
 import { describeEntryProblem, judgeRadioGroups } from "./field-choices.ts";
+import { buildCompletionAttachments } from "./completion-attachments.ts";
+import {
+  DEFAULT_SIGNATURE_STYLE,
+  isSignatureStyleId,
+  type SignatureStyleId,
+} from "./signature-styles.ts";
 import { consumeRateLimit, refundRateLimit } from "./security/rate-limit.ts";
 import {
   buildDisclosureSections,
@@ -141,6 +146,8 @@ type FieldPersistenceUpdate = {
   fieldId: string;
   imageKey: string | null;
   inputMethod: "auto" | "drawn" | "typed" | null;
+  /** Only for a typed signature or initials. */
+  signatureStyle?: SignatureStyleId | null;
   submittedAt: number | null;
   value: string | null;
 };
@@ -208,6 +215,7 @@ type SigningFieldRow = {
   options: string[] | null;
   page: number;
   required: boolean;
+  signatureStyle: string | null;
   signerId: string;
   submittedAt: number | null;
   type: FieldType;
@@ -481,6 +489,8 @@ function buildDeclineNotificationEmail(input: {
 function buildCompletionSignerEmail(input: {
   attached: boolean;
   branding: Branding;
+  /** The certificate is attached too, not only linked. */
+  certificateAttached?: boolean;
   /** True for someone who gets a copy without having signed. */
   copyOnly?: boolean;
   evidenceDownloadUrl: string;
@@ -500,7 +510,9 @@ function buildCompletionSignerEmail(input: {
       ? [`${input.senderName} asked for you to receive a copy.`]
       : []),
     input.attached
-      ? "The completed document and its certificate are attached. Keep them: they are your copy of the agreement."
+      ? input.certificateAttached
+        ? "The completed document and its certificate are attached. Keep them: they are your copy of the agreement."
+        : "The completed document is attached. Keep it: it is your copy of the agreement. Its certificate can be downloaded below."
       : "The completed document and its certificate are ready.",
     "",
     `Download links (available for ${RECIPIENT_DOWNLOAD_LINK_TTL_DAYS} days; an expired link offers to send a new one):`,
@@ -514,7 +526,9 @@ function buildCompletionSignerEmail(input: {
       ? `<p>${escapeHtml(input.senderName)} asked for you to receive a copy.</p>`
       : "",
     input.attached
-      ? "<p>The completed document and its certificate are attached. Keep them: they are your copy of the agreement.</p>"
+      ? input.certificateAttached
+        ? "<p>The completed document and its certificate are attached. Keep them: they are your copy of the agreement.</p>"
+        : "<p>The completed document is attached. Keep it: it is your copy of the agreement. Its certificate can be downloaded below.</p>"
       : "<p>The completed document and its certificate are ready.</p>",
     `<p>Download links are available for ${RECIPIENT_DOWNLOAD_LINK_TTL_DAYS} days. An expired link offers to send a new one.</p>`,
     `<p><a href="${escapeHtml(input.signedDownloadUrl)}">Download signed PDF</a><br /><a href="${escapeHtml(input.evidenceDownloadUrl)}">Download redacted certificate</a></p>`,
@@ -558,6 +572,10 @@ function mapFieldRow(row: SigningFieldRow) {
     options: row.options ?? undefined,
     page: row.page,
     required: row.required,
+    // A style this version does not know is drawn in the default one.
+    signatureStyle: isSignatureStyleId(row.signatureStyle)
+      ? row.signatureStyle
+      : null,
     signerId: row.signerId,
     submittedAt: row.submittedAt,
     type: row.type,
@@ -725,6 +743,7 @@ async function listFieldRows(
         input_method AS "inputMethod",
         value,
         image_key AS "imageKey",
+        signature_style AS "signatureStyle",
         checked,
         options,
         group_id AS "groupId",
@@ -1152,6 +1171,7 @@ function applyFieldUpdatesToRecords(
       checked: update.checked,
       imageKey: update.imageKey,
       inputMethod: update.inputMethod,
+      signatureStyle: update.signatureStyle ?? null,
       submittedAt: update.submittedAt,
       updatedAt,
       value: update.value,
@@ -1219,19 +1239,13 @@ async function sendCompletionEmails(input: {
   const fileNameStem =
     sanitizeFileNameSegment(input.envelopeTitle) ||
     `envelope-${input.envelopeId}`;
-  const attachments: EmailAttachment[] = [
-    {
-      content: input.attachments.signedPdf,
-      contentType: "application/pdf",
-      filename: `${fileNameStem} - signed.pdf`,
-    },
-    {
-      content: input.attachments.recipientCertificate,
-      contentType: "application/pdf",
-      filename: `${fileNameStem} - certificate.pdf`,
-    },
-  ];
+  const attachments = buildCompletionAttachments({
+    fileNameStem,
+    recipientCertificate: input.attachments.recipientCertificate,
+    signedPdf: input.attachments.signedPdf,
+  });
   const attach = fitsAsAttachments(attachments);
+  const certificateAttached = attach && attachments.length > 1;
   const senderName = normalizeSenderName(input.sender);
   const issuedAt = Math.floor(Date.now() / 1000);
   const branding = await getBranding();
@@ -1284,6 +1298,7 @@ async function sendCompletionEmails(input: {
           ...buildCompletionSignerEmail({
             attached: attach,
             branding,
+            certificateAttached,
             copyOnly: signer.copyOnly,
             envelopeId: input.envelopeId,
             envelopeTitle: input.envelopeTitle,
@@ -2148,6 +2163,7 @@ export async function getSigningPayloadForToken(
           : null,
         inputMethod: field.inputMethod ?? null,
         label: field.label,
+        signatureStyle: field.signatureStyle ?? null,
         page: field.page,
         required: field.required,
         signerId: field.signerId,
@@ -2541,6 +2557,7 @@ function buildSignerSubmission(
           fieldId: field.id,
           imageKey: null,
           inputMethod: "typed",
+          signatureStyle: submission.style ?? DEFAULT_SIGNATURE_STYLE,
           submittedAt,
           value: submission.value,
         });
@@ -2955,7 +2972,8 @@ async function submitSigningOnce(
                 image_key = $3,
                 checked = $4,
                 submitted_at = $5,
-                updated_at = $6
+                updated_at = $6,
+                signature_style = $10
               WHERE id = $7
                 AND envelope_id = $8
                 AND signer_id = $9
@@ -2970,6 +2988,7 @@ async function submitSigningOnce(
               update.fieldId,
               context.envelope.id,
               currentSignerId,
+              update.signatureStyle ?? null,
             ],
           );
 
@@ -3278,7 +3297,8 @@ async function submitSigningOnce(
                 image_key = $3,
                 checked = $4,
                 submitted_at = $5,
-                updated_at = $6
+                updated_at = $6,
+                signature_style = $10
               WHERE id = $7
                 AND envelope_id = $8
                 AND signer_id = $9
@@ -3293,6 +3313,7 @@ async function submitSigningOnce(
               update.fieldId,
               context.envelope.id,
               currentSignerId,
+              update.signatureStyle ?? null,
             ],
           );
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { signatureStyleSchema } from "../signature-styles.ts";
 import { signatureMeanings } from "../types/domain.ts";
 import { envelopePageSchema } from "./envelope.ts";
 import { fieldInputMethodSchema, fieldTypeSchema } from "./field.ts";
@@ -47,6 +48,7 @@ export const signingVisibleFieldSchema = signingFieldBaseSchema.extend({
   checked: z.boolean().nullable().optional(),
   imageDataUrl: z.string().trim().min(1).nullable().optional(),
   inputMethod: fieldInputMethodSchema.nullable().optional(),
+  signatureStyle: signatureStyleSchema.nullable().optional(),
   signerName: nameSchema,
   submittedAt: unixTimestampSchema,
   value: optionalTrimmedString(5000).nullable().optional(),

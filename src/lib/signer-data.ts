@@ -113,6 +113,7 @@ export async function exportSignerData(
           value,
           checked,
           image_key IS NOT NULL AS "hasImage",
+          signature_style AS "signatureStyle",
           submitted_at AS "submittedAt"
         FROM fields
         WHERE signer_id = ANY($1::text[])

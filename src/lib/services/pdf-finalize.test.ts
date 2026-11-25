@@ -202,6 +202,52 @@ test("the signed PDF stamps values in any of the supported scripts", async () =>
   );
 });
 
+test("a typed signature is drawn in its style, inside a frame naming the signer", async () => {
+  const fixture = await makeFixture();
+  const signerId = "3f2a9c1e-7b4d-4e8a-9c0f-1a2b3c4d5e6f";
+  const fields: FieldRecord[] = [
+    {
+      ...fixture.fields[0]!,
+      signatureStyle: "sacramento",
+      signerId,
+      value: "Ada Lovelace",
+    },
+    // Initials have no frame, and no style means Great Vibes.
+    {
+      ...fixture.fields[1]!,
+      height: 0.03,
+      signerId,
+      type: "initials",
+      value: "AL",
+      width: 0.08,
+    },
+  ];
+  const pdfBytes = await renderFinalizedEnvelopePdf(
+    {
+      auditEvents: [],
+      completedAt: fixture.envelope.completedAt!,
+      envelope: fixture.envelope,
+      fields,
+      pages: [],
+      signers: fixture.signers,
+      sourcePdfKey: fixture.envelope.sourcePdfKey,
+    },
+    {
+      seal: (pdfDocument) => pdfDocument.save({ useObjectStreams: false }),
+      storageService: fixture.storageService,
+    },
+  );
+  const text = (await extractText(pdfBytes)).replace(/\s+/g, " ");
+  const raw = Buffer.from(pdfBytes).toString("latin1");
+
+  assert.ok(text.includes("Ada Lovelace"));
+  assert.equal(text.match(/Signed by:/g)?.length, 1);
+  assert.ok(text.includes("3F2A9C1E7B4D4E8…"));
+  assert.match(raw, /\/BaseFont \/[A-Z]*\+?Sacramento/);
+  assert.match(raw, /\/BaseFont \/[A-Z]*\+?GreatVibes/);
+  assert.doesNotMatch(raw, /DancingScript|Allura/);
+});
+
 test("the certificate prints names, titles and browser strings as they are", async () => {
   const fixture = await makeFixture();
   const pdfBytes = await renderEnvelopeCertificatePdf(

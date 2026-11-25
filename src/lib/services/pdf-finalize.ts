@@ -1,6 +1,19 @@
 import { randomUUID } from "node:crypto";
 
-import { PDFDocument, type PDFImage, type PDFPage, rgb } from "pdf-lib";
+import {
+  appendQuadraticCurve,
+  lineTo,
+  moveTo,
+  PDFDocument,
+  type PDFImage,
+  type PDFPage,
+  popGraphicsState,
+  pushGraphicsState,
+  rgb,
+  setLineWidth,
+  setStrokingColor,
+  stroke,
+} from "pdf-lib";
 
 import {
   auditEventRecordSchema,
@@ -8,6 +21,12 @@ import {
   type EnvelopeRecord,
 } from "../schemas/envelope.ts";
 import type { FieldRecord } from "../schemas/field.ts";
+import {
+  resolveSignatureStyle,
+  SIGNATURE_FRAME_LABEL,
+  signatureFrameId,
+  type SignatureStyleId,
+} from "../signature-styles.ts";
 import type { SignerRecord } from "../schemas/signer.ts";
 import { buildSignatureManifestation } from "../signature-meanings.ts";
 import { hasSharedSigningStep, signingStepOf } from "../signing-steps.ts";
@@ -673,13 +692,126 @@ function buildCertificateAuditEvents(input: {
   ];
 }
 
+export type SignatureFonts = {
+  auditRegular: TextFace;
+  /** Typed signatures in the default style. */
+  signature: TextFace;
+  /** Typed signatures in each style the document uses. */
+  signatures?: Partial<Record<SignatureStyleId, TextFace>>;
+};
+
+type PdfRect = {
+  heightPt: number;
+  widthPt: number;
+  xPt: number;
+  yPt: number;
+};
+
+/** The script styles the typed signatures and initials among these use. */
+export function typedSignatureStyles(
+  fields: readonly FieldRecord[],
+): SignatureStyleId[] {
+  return [
+    ...new Set(
+      fields
+        .filter(
+          (field) =>
+            (field.type === "signature" || field.type === "initials") &&
+            field.inputMethod !== "drawn",
+        )
+        .map((field) => resolveSignatureStyle(field.signatureStyle)),
+    ),
+  ];
+}
+
+/** Every character the frame can print, for the embedded font subset. */
+export const SIGNATURE_FRAME_CHARACTERS = `${SIGNATURE_FRAME_LABEL}0123456789ABCDEF…`;
+
+const SIGNATURE_FRAME_COLOR = rgb(0.13, 0.27, 0.56);
+const SIGNATURE_FRAME_TEXT_SIZE = 6.5;
+
+/**
+ * Draws a rounded bracket down the left of a signature field, "Signed by:"
+ * at its top and the signer's short id at its foot, all inside the field.
+ * Returns the box left for the signature, or null when the field is too
+ * small for a frame. On a short field the words are left out.
+ */
+function drawSignatureFrame(
+  page: PDFPage,
+  rect: PdfRect,
+  font: TextFace,
+  signerId: string,
+): PdfRect | null {
+  if (rect.widthPt < 36 || rect.heightPt < 14) {
+    return null;
+  }
+
+  const line = 0.9;
+  // The stroke is centred on its path, so the path sits half a line in.
+  const left = rect.xPt + line / 2;
+  const bottom = rect.yPt + line / 2;
+  const top = rect.yPt + rect.heightPt - line / 2;
+  const radius = Math.min(4, (top - bottom) / 4);
+  const arm = Math.min(rect.widthPt * 0.3, 28);
+
+  // Path operators, not drawSvgPath: that one adds a transform, and a
+  // stamp drawn on an upright page has none.
+  page.pushOperators(
+    pushGraphicsState(),
+    setStrokingColor(SIGNATURE_FRAME_COLOR),
+    setLineWidth(line),
+    moveTo(left + arm, top),
+    lineTo(left + radius, top),
+    appendQuadraticCurve(left, top, left, top - radius),
+    lineTo(left, bottom + radius),
+    appendQuadraticCurve(left, bottom, left + radius, bottom),
+    lineTo(left + arm, bottom),
+    stroke(),
+    popGraphicsState(),
+  );
+
+  const contentX = rect.xPt + radius + 2;
+  const contentWidth = rect.xPt + rect.widthPt - contentX - 1;
+  const size = SIGNATURE_FRAME_TEXT_SIZE;
+  const band = size + 3;
+  // Room for the label, the id and a signature at least as tall as both.
+  const withWords = rect.heightPt >= band * 2 + size * 2;
+
+  if (!withWords) {
+    return {
+      heightPt: rect.heightPt - line * 2,
+      widthPt: contentWidth,
+      xPt: contentX,
+      yPt: rect.yPt + line,
+    };
+  }
+
+  const drawWords = (text: string, y: number) => {
+    if (text && font.widthOfTextAtSize(text, size) <= contentWidth) {
+      font.drawText(page, text, {
+        color: SIGNATURE_FRAME_COLOR,
+        size,
+        x: contentX,
+        y,
+      });
+    }
+  };
+
+  drawWords(SIGNATURE_FRAME_LABEL, rect.yPt + rect.heightPt - line - size);
+  drawWords(signatureFrameId(signerId), rect.yPt + line + size * 0.3);
+
+  return {
+    heightPt: rect.heightPt - band * 2,
+    widthPt: contentWidth,
+    xPt: contentX,
+    yPt: rect.yPt + band,
+  };
+}
+
 export async function stampFieldValue(
   field: FieldRecord,
   page: PDFPage,
-  fonts: {
-    auditRegular: TextFace;
-    signature: TextFace;
-  },
+  fonts: SignatureFonts,
   imageCache: Map<string, PDFImage>,
   pdfDocument: PDFDocument,
   storageService: StorageService,
@@ -710,10 +842,7 @@ async function drawFieldValue(
   field: FieldRecord,
   page: PDFPage,
   geometry: DisplayedPageGeometry,
-  fonts: {
-    auditRegular: TextFace;
-    signature: TextFace;
-  },
+  fonts: SignatureFonts,
   imageCache: Map<string, PDFImage>,
   pdfDocument: PDFDocument,
   storageService: StorageService,
@@ -724,6 +853,15 @@ async function drawFieldValue(
   switch (field.type) {
     case "signature":
     case "initials": {
+      // A signature is drawn in a frame that says whose it is. Initials are
+      // too small for one.
+      const box =
+        field.type === "signature"
+          ? drawSignatureFrame(page, rect, fonts.auditRegular, field.signerId)
+          : null;
+      const area = box ?? rect;
+      const inset = box ? 1 : padding;
+
       if (field.inputMethod === "drawn" && field.imageKey) {
         const image = await getEmbeddedPng(
           field.imageKey,
@@ -731,11 +869,14 @@ async function drawFieldValue(
           pdfDocument,
           storageService,
         );
-        const maxWidth = Math.max(4, rect.widthPt - padding * 2);
-        const maxHeight = Math.max(4, rect.heightPt - padding * 2);
+        const maxWidth = Math.max(4, area.widthPt - inset * 2);
+        const maxHeight = Math.max(4, area.heightPt - inset * 2);
         const scaled = image.scaleToFit(maxWidth, maxHeight);
-        const x = rect.xPt + (rect.widthPt - scaled.width) / 2;
-        const y = rect.yPt + (rect.heightPt - scaled.height) / 2;
+        // In a frame it starts at the bracket, as a typed one does.
+        const x = box
+          ? area.xPt + inset
+          : area.xPt + (area.widthPt - scaled.width) / 2;
+        const y = area.yPt + (area.heightPt - scaled.height) / 2;
 
         page.drawImage(image, {
           height: scaled.height,
@@ -753,21 +894,26 @@ async function drawFieldValue(
         return;
       }
 
-      const maxWidth = Math.max(12, rect.widthPt - padding * 2);
-      const maxHeight = Math.max(10, rect.heightPt - padding * 2);
+      const face =
+        fonts.signatures?.[resolveSignatureStyle(field.signatureStyle)] ??
+        fonts.signature;
+      const maxWidth = Math.max(box ? 4 : 12, area.widthPt - inset * 2);
+      const maxHeight = Math.max(box ? 4 : 10, area.heightPt - inset * 2);
       const fontSize = fitTextSize(
-        fonts.signature,
+        face,
         signatureValue,
         maxWidth,
         maxHeight,
-        Math.min(maxHeight, rect.heightPt * 0.9),
+        // Script descenders reach below the size; in a frame they would
+        // touch the id.
+        Math.min(maxHeight, area.heightPt * (box ? 0.75 : 0.9)),
       );
 
-      fonts.signature.drawText(page, signatureValue, {
+      face.drawText(page, signatureValue, {
         color: rgb(0.12, 0.12, 0.12),
         size: fontSize,
-        x: rect.xPt + padding,
-        y: rect.yPt + (rect.heightPt - fontSize) / 2 + fontSize * 0.1,
+        x: area.xPt + inset,
+        y: area.yPt + (area.heightPt - fontSize) / 2 + fontSize * 0.1,
       });
 
       return;
@@ -1793,6 +1939,7 @@ export async function renderFinalizedEnvelopePdf(
     pdfDocument,
     [
       stampedFields.map((field) => field.value),
+      SIGNATURE_FRAME_CHARACTERS,
       [...manifestations.values()],
       input.includeAuditTrail
         ? [
@@ -1806,11 +1953,7 @@ export async function renderFinalizedEnvelopePdf(
     {
       bold: Boolean(input.includeAuditTrail),
       certificate: Boolean(input.includeAuditTrail),
-      signature: stampedFields.some(
-        (field) =>
-          (field.type === "signature" || field.type === "initials") &&
-          field.inputMethod !== "drawn",
-      ),
+      signatureStyles: typedSignatureStyles(stampedFields),
     },
   );
   const imageCache = new Map<string, PDFImage>();
@@ -1837,7 +1980,11 @@ export async function renderFinalizedEnvelopePdf(
     await stampFieldValue(
       field,
       page,
-      { auditRegular: faces.regular, signature: faces.signature },
+      {
+        auditRegular: faces.regular,
+        signature: faces.signature,
+        signatures: faces.signatures,
+      },
       imageCache,
       pdfDocument,
       storageService,

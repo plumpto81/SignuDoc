@@ -71,6 +71,7 @@ import {
   signatureMeaningLabel,
 } from "./part11.ts";
 import { getBranding, readStoredSettings } from "./settings.ts";
+import { isSignatureStyleId } from "./signature-styles.ts";
 import { type RecipientRole, type SignatureMeaning } from "./types/domain.ts";
 import { importPdfDocument } from "./services/document-import.ts";
 import {
@@ -287,6 +288,7 @@ type FieldRow = {
   options: string[] | null;
   page: number;
   required: boolean;
+  signatureStyle: string | null;
   signerId: string;
   submittedAt: number | null;
   type: FieldRecord["type"];
@@ -1154,6 +1156,9 @@ function mapFieldRow(row: FieldRow): PersistedFieldRecord {
     options: row.options ?? undefined,
     page: row.page,
     required: row.required,
+    signatureStyle: isSignatureStyleId(row.signatureStyle)
+      ? row.signatureStyle
+      : null,
     signerId: row.signerId,
     submittedAt: row.submittedAt,
     type: row.type,
@@ -1458,6 +1463,7 @@ async function listFieldsForEnvelopeIds(
         input_method AS "inputMethod",
         value,
         image_key AS "imageKey",
+        signature_style AS "signatureStyle",
         checked,
         options,
         group_id AS "groupId",

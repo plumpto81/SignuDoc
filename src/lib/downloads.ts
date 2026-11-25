@@ -11,6 +11,7 @@ import {
   type EnvelopeRecord,
 } from "./schemas/envelope.ts";
 import { truncateToWholeCharacters } from "./text-truncate.ts";
+import { isSignatureStyleId } from "./signature-styles.ts";
 import { fieldRecordSchema, type FieldRecord } from "./schemas/field.ts";
 import { signerRecordSchema, type SignerRecord } from "./schemas/signer.ts";
 import { listAuditEventsForEnvelope } from "./services/audit.ts";
@@ -99,6 +100,7 @@ type FieldRow = {
   options: string[] | null;
   page: number;
   required: boolean;
+  signatureStyle: string | null;
   signerId: string;
   submittedAt: number | null;
   type: FieldRecord["type"];
@@ -183,6 +185,9 @@ function mapFieldRow(row: FieldRow): FieldRecord {
     options: row.options ?? undefined,
     page: row.page,
     required: row.required,
+    signatureStyle: isSignatureStyleId(row.signatureStyle)
+      ? row.signatureStyle
+      : null,
     signerId: row.signerId,
     submittedAt: row.submittedAt,
     type: row.type,
@@ -480,6 +485,7 @@ async function listFieldsForEnvelope(
         input_method AS "inputMethod",
         value,
         image_key AS "imageKey",
+        signature_style AS "signatureStyle",
         checked,
         options,
         group_id AS "groupId",

@@ -54,15 +54,23 @@ import {
   NUMBER_ENTRY_MESSAGE,
 } from "@/lib/field-choices";
 import { getInitials } from "@/lib/initials";
+import {
+  DEFAULT_SIGNATURE_STYLE,
+  SIGNATURE_FRAME_LABEL,
+  signatureFrameId,
+  signatureStyleIds,
+  signatureStyleLabels,
+  type SignatureStyleId,
+} from "@/lib/signature-styles";
 import { truncateToWholeCharacters } from "@/lib/text-truncate";
 import { postToEmbedParent } from "./embed-parent-message";
-
-const typedSignatureFont =
-  '"Snell Roundhand", "Brush Script MT", "Segoe Script", cursive';
+import { signatureFontFamily } from "./signature-fonts";
 
 type SignatureEntry = {
   imageDataUrl?: string | null;
   inputMethod: "drawn" | "typed";
+  /** The script a typed entry is drawn in. */
+  style?: SignatureStyleId;
   value: string;
 };
 
@@ -426,6 +434,7 @@ function buildSigningSubmissionPayload(
       fields.push({
         fieldId: field.id,
         inputMethod: "typed",
+        style: entry.style ?? DEFAULT_SIGNATURE_STYLE,
         type: field.type,
         value: entry.value,
       });
@@ -1761,7 +1770,7 @@ function CurrentSignerField({
     return (
       <button
         aria-label={getSummaryLabel(field)}
-        className={`absolute z-2 overflow-hidden rounded-[0.375rem] border-2 border-(--accent) text-(--accent-ink) transition ${
+        className={`absolute z-2 overflow-hidden rounded-[0.375rem] border-2 border-(--accent) text-(--accent-ink) transition [container-type:size] ${
           signatureEntry?.value
             ? "bg-[rgb(var(--accent-rgb)/0.10)]"
             : "bg-[rgb(var(--accent-rgb)/0.07)] hover:bg-[rgb(var(--accent-rgb)/0.16)]"
@@ -1771,7 +1780,16 @@ function CurrentSignerField({
         style={frame}
         type="button"
       >
-        <span className="pointer-events-none flex h-full w-full items-center justify-center overflow-hidden px-1 text-center">
+        {field.type === "signature" && signatureEntry?.value ? (
+          <SignatureFramePreview signerId={field.signerId} />
+        ) : null}
+        <span
+          className={`pointer-events-none flex h-full w-full items-center overflow-hidden px-1 ${
+            field.type === "signature" && signatureEntry?.value
+              ? "justify-start py-[16cqh] pl-[6%] text-left"
+              : "justify-center text-center"
+          }`}
+        >
           {signatureEntry?.inputMethod === "drawn" &&
           signatureEntry.imageDataUrl ? (
             <span className="relative block h-full w-full">
@@ -1789,7 +1807,7 @@ function CurrentSignerField({
               style={{
                 fontFamily:
                   signatureEntry.inputMethod === "typed"
-                    ? typedSignatureFont
+                    ? signatureFontFamily(signatureEntry.style)
                     : undefined,
                 fontSize:
                   signatureEntry.inputMethod === "typed"
@@ -2058,7 +2076,7 @@ function VisibleFieldStamp({ field }: { field: SigningVisibleField }) {
               fontFamily:
                 field.inputMethod === "typed" &&
                 (field.type === "signature" || field.type === "initials")
-                  ? typedSignatureFont
+                  ? signatureFontFamily(field.signatureStyle)
                   : undefined,
               fontSize:
                 field.inputMethod === "typed" &&
@@ -2076,6 +2094,25 @@ function VisibleFieldStamp({ field }: { field: SigningVisibleField }) {
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * The frame the finished PDF draws around a signature: a bracket down the
+ * left, "Signed by:" at the top and the signer's short id at the foot. Sized
+ * against the field (cqh), so it scales with the page as the PDF's does.
+ */
+function SignatureFramePreview({ signerId }: { signerId: string }) {
+  return (
+    <span aria-hidden="true" className="pointer-events-none absolute inset-0">
+      <span className="absolute inset-y-[3%] left-[2px] w-[30%] rounded-l-[4px] border-y border-l border-[#21458f]" />
+      <span className="absolute left-[6%] top-[4%] text-[length:13cqh] leading-none text-[#21458f]">
+        {SIGNATURE_FRAME_LABEL}
+      </span>
+      <span className="absolute bottom-[4%] left-[6%] text-[length:13cqh] leading-none text-[#21458f]">
+        {signatureFrameId(signerId)}
+      </span>
+    </span>
   );
 }
 
@@ -2118,6 +2155,12 @@ function SignatureModal({
       ? truncateToWholeCharacters(getSignerInitials(signerName), 4)
       : signerName;
   });
+  const [typedSignatureStyle, setTypedSignatureStyle] =
+    useState<SignatureStyleId>(
+      existingEntry?.inputMethod === "typed" && existingEntry.style
+        ? existingEntry.style
+        : DEFAULT_SIGNATURE_STYLE,
+    );
   const drawPreviewMessage =
     drawnSignatureVersion === 0
       ? "Draw with mouse or finger"
@@ -2188,21 +2231,38 @@ function SignatureModal({
             />
           </label>
 
-          <div className="well px-6 py-8 text-center">
-            <p
-              className={`text-[40px] leading-none sm:text-[52px] ${
-                normalizedTypedSignatureValue
-                  ? "text-(--fg)"
-                  : "text-(--placeholder)"
-              }`}
-              style={{ fontFamily: typedSignatureFont }}
-            >
-              {normalizedTypedSignatureValue || typedPlaceholder}
-            </p>
-            <p className="mt-4 text-xs font-medium text-(--tertiary)">
-              Rendered in signature style
-            </p>
-          </div>
+          <fieldset className="grid gap-2">
+            <legend className="mb-1.5 text-[0.8125rem] font-semibold text-(--secondary)">
+              Select style
+            </legend>
+            {signatureStyleIds.map((style) => (
+              <label
+                className={`well flex min-h-16 cursor-pointer items-center gap-3 px-4 py-2 transition has-checked:ring-2 has-checked:ring-(--accent) ${
+                  normalizedTypedSignatureValue
+                    ? "text-(--fg)"
+                    : "text-(--placeholder)"
+                }`}
+                key={style}
+              >
+                <input
+                  checked={typedSignatureStyle === style}
+                  className="size-4 shrink-0 accent-(--accent)"
+                  name={`signature-modal-${fieldType}-style`}
+                  onChange={() => setTypedSignatureStyle(style)}
+                  type="radio"
+                  value={style}
+                />
+                <span className="sr-only">{signatureStyleLabels[style]}</span>
+                <span
+                  aria-hidden="true"
+                  className="min-w-0 truncate text-[32px] leading-[1.3] sm:text-[38px]"
+                  style={{ fontFamily: signatureFontFamily(style) }}
+                >
+                  {normalizedTypedSignatureValue || typedPlaceholder}
+                </span>
+              </label>
+            ))}
+          </fieldset>
         </div>
       ) : (
         <div className="well p-3">
@@ -2249,6 +2309,7 @@ function SignatureModal({
                 : {
                     imageDataUrl: null,
                     inputMethod: "typed",
+                    style: typedSignatureStyle,
                     value: normalizedTypedSignatureValue,
                   },
             )

@@ -9,9 +9,17 @@ replace the licenses for redistributed third-party files.
 ### 1. Great Vibes font
 
 - **Bundled path:** `src/assets/fonts/GreatVibes-Regular.ttf`
-- **Used by:** `src/lib/services/pdf-fonts.ts` (typed signatures)
+- **Used by:** `src/lib/services/pdf-fonts.ts` and `src/components/signing/signature-fonts.ts` (typed signatures, on the PDF and on the signing page)
 - **License:** SIL Open Font License 1.1
 - **Full license text:** `src/assets/fonts/LICENSE-GreatVibes-OFL.txt`
+
+### 1a. Dancing Script, Allura and Sacramento fonts
+
+- **Bundled paths:** `src/assets/fonts/DancingScript-Variable.ttf`, `src/assets/fonts/Allura-Regular.ttf`, `src/assets/fonts/Sacramento-Regular.ttf`
+- **Source project:** https://github.com/google/fonts (`ofl/dancingscript/DancingScript[wght].ttf`, `ofl/allura`, `ofl/sacramento`), unmodified
+- **Used by:** `src/lib/services/pdf-fonts.ts` and `src/components/signing/signature-fonts.ts` (typed signature styles)
+- **License:** SIL Open Font License 1.1
+- **Full license text:** `src/assets/fonts/LICENSE-DancingScript-OFL.txt`, `src/assets/fonts/LICENSE-Allura-OFL.txt`, `src/assets/fonts/LICENSE-Sacramento-OFL.txt`
 
 ### 2. Noto Sans fonts
 

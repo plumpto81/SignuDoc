@@ -6,6 +6,7 @@ import {
   MAX_NUMBER_ENTRY_LENGTH,
   MAX_RADIO_GROUP_BUTTONS,
 } from "../field-choices.ts";
+import { signatureStyleSchema } from "../signature-styles.ts";
 import { fieldInputMethods, fieldTypes } from "../types/domain.ts";
 import {
   idSchema,
@@ -184,6 +185,8 @@ export const fieldRecordSchema = fieldPlacementSchema.extend({
   inputMethod: fieldInputMethodSchema.nullable().optional(),
   value: optionalTrimmedString(5000).nullable().optional(),
   imageKey: z.string().trim().min(1).nullable().optional(),
+  /** The script a typed signature or initials is drawn in. */
+  signatureStyle: signatureStyleSchema.nullable().optional(),
   checked: z.boolean().nullable().optional(),
   submittedAt: unixTimestampSchema.nullable().optional(),
   createdAt: unixTimestampSchema,
@@ -195,6 +198,8 @@ const typedSignatureSubmissionSchema = z.object({
   type: z.enum(["signature", "initials"]),
   inputMethod: z.literal("typed"),
   value: z.string().trim().min(1).max(200),
+  // Left out by older clients: drawn in the default style.
+  style: signatureStyleSchema.optional(),
 });
 
 const drawnSignatureSubmissionSchema = z.object({

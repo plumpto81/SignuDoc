@@ -16,7 +16,12 @@ import {
 
 import type { FieldRecord } from "../schemas/field.ts";
 import { normalizedRectToPdfRect } from "../utils/pdf-coords.ts";
-import { shouldStampField, stampFieldValue } from "./pdf-finalize.ts";
+import {
+  SIGNATURE_FRAME_CHARACTERS,
+  shouldStampField,
+  stampFieldValue,
+  typedSignatureStyles,
+} from "./pdf-finalize.ts";
 import { embedTextFaces } from "./pdf-fonts.ts";
 import {
   displayedRectToUserSpaceBox,
@@ -354,14 +359,8 @@ export async function prepareSignerRevision(
     edit: async ({ document, placeSignature }) => {
       const faces = await embedTextFaces(
         document,
-        [fields.map((field) => field.value)],
-        {
-          signature: fields.some(
-            (field) =>
-              (field.type === "signature" || field.type === "initials") &&
-              field.inputMethod !== "drawn",
-          ),
-        },
+        [fields.map((field) => field.value), SIGNATURE_FRAME_CHARACTERS],
+        { signatureStyles: typedSignatureStyles(fields) },
       );
       const imageCache = new Map<string, PDFImage>();
       const storedPages = new Map(pages.map((page) => [page.pageNumber, page]));
@@ -390,7 +389,11 @@ export async function prepareSignerRevision(
         await stampFieldValue(
           field,
           scratch,
-          { auditRegular: faces.regular, signature: faces.signature },
+          {
+            auditRegular: faces.regular,
+            signature: faces.signature,
+            signatures: faces.signatures,
+          },
           imageCache,
           document,
           imageStore,

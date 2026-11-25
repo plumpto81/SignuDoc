@@ -4,6 +4,11 @@ import path from "node:path";
 import fontkit from "@pdf-lib/fontkit";
 import type { Color, PDFDocument, PDFFont, PDFPage } from "pdf-lib";
 
+import {
+  DEFAULT_SIGNATURE_STYLE,
+  type SignatureStyleId,
+} from "../signature-styles.ts";
+
 // Fonts for the text SignuDoc draws into finished PDFs: field values on the
 // signed document, and every line of the audit certificate.
 //
@@ -31,9 +36,18 @@ const FONT_READERS = {
   cjk: () =>
     fs.readFile(path.join(FONT_DIRECTORY, "NotoSansCJKjp-Regular.ttf")),
   regular: () => fs.readFile(path.join(FONT_DIRECTORY, "NotoSans-Regular.ttf")),
-  signature: () =>
+  "signature-allura": () =>
+    fs.readFile(path.join(FONT_DIRECTORY, "Allura-Regular.ttf")),
+  "signature-dancing-script": () =>
+    fs.readFile(path.join(FONT_DIRECTORY, "DancingScript-Variable.ttf")),
+  "signature-great-vibes": () =>
     fs.readFile(path.join(FONT_DIRECTORY, "GreatVibes-Regular.ttf")),
-} as const;
+  "signature-sacramento": () =>
+    fs.readFile(path.join(FONT_DIRECTORY, "Sacramento-Regular.ttf")),
+} as const satisfies Record<
+  `signature-${SignatureStyleId}` | "bold" | "cjk" | "regular",
+  () => Promise<Buffer>
+>;
 
 const SUBSETTER_PATH = path.join(
   process.cwd(),
@@ -428,8 +442,13 @@ export class TextFace {
 export type PdfTextFaces = {
   bold: TextFace;
   regular: TextFace;
-  /** Typed signatures: a script font, falling back to the regular face. */
+  /**
+   * Typed signatures in the default style: a script font, falling back to
+   * the regular face.
+   */
   signature: TextFace;
+  /** Typed signatures in each style that was asked for. */
+  signatures: Partial<Record<SignatureStyleId, TextFace>>;
 };
 
 /** Every code point in every string of a value, however deeply nested. */
@@ -478,8 +497,10 @@ type EmbedTextFacesOptions = {
   bold?: boolean;
   /** Add the characters the certificate's own wording needs. */
   certificate?: boolean;
-  /** Embed the script font for typed signatures. */
+  /** Embed the default script font for typed signatures. */
   signature?: boolean;
+  /** Embed these styles' script fonts too. */
+  signatureStyles?: readonly SignatureStyleId[];
   /** For tests: replaces the HarfBuzz subsetter. */
   subset?: (fontBytes: Uint8Array, codePoints: Iterable<number>) => Uint8Array;
 };
@@ -507,10 +528,16 @@ export async function embedTextFaces(
   codePoints.add(REPLACEMENT_CHARACTER);
   pdfDocument.registerFontkit(fontkit);
 
-  const [regular, bold, signature] = await Promise.all([
+  const styles = [
+    ...new Set([
+      ...(options.signature ? [DEFAULT_SIGNATURE_STYLE] : []),
+      ...(options.signatureStyles ?? []),
+    ]),
+  ];
+  const [regular, bold, ...scripts] = await Promise.all([
     loadFont("regular"),
     options.bold ? loadFont("bold") : null,
-    options.signature ? loadFont("signature") : null,
+    ...styles.map((style) => loadFont(`signature-${style}`)),
   ]);
   const needsCjk = [...codePoints].some(
     (codePoint) => !regular.characters.has(codePoint),
@@ -569,19 +596,26 @@ export async function embedTextFaces(
     : regularFont;
   const cjkFont = cjk && subset ? await embed(cjk) : null;
   const fallbacks = cjkFont ? [cjkFont] : [];
-  // The script font is embedded whole, as it always was: a typed signature
-  // should look the same in every document.
-  const signatureFont = signature
-    ? await embed(signature, { whole: true })
-    : null;
+  // The script fonts are embedded whole, as they always were: a typed
+  // signature should look the same in every document.
+  const signatures: Partial<Record<SignatureStyleId, TextFace>> = {};
+
+  for (const [index, style] of styles.entries()) {
+    const scriptFont = await embed(scripts[index]!, { whole: true });
+
+    signatures[style] = new TextFace([
+      ...(scriptFont ? [scriptFont] : []),
+      regularFont,
+      ...fallbacks,
+    ]);
+  }
 
   return {
     bold: new TextFace([boldFont, regularFont, ...fallbacks]),
     regular: new TextFace([regularFont, ...fallbacks]),
-    signature: new TextFace([
-      ...(signatureFont ? [signatureFont] : []),
-      regularFont,
-      ...fallbacks,
-    ]),
+    signature:
+      signatures[DEFAULT_SIGNATURE_STYLE] ??
+      new TextFace([regularFont, ...fallbacks]),
+    signatures,
   };
 }
